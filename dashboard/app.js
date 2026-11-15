@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by main.ts
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts
 // from the same board board.json carries) and renders the ranked board, a filterable table, a
 // per-protocol detail drawer with the model's own inputs and the protocol's farm plan, and the
 // live-token protocols set aside with their market caps. No network: every byte it shows is in
@@ -36,7 +36,7 @@
     var growthMult = 1 + (growth / 100) * weight;
     var age = row.age_days === null || row.age_days === undefined ? DATA.unknown_age_days : row.age_days;
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-    return Math.max(1, Math.round(row.tvl_usd * row.category_multiple * growthMult * maturity));
+    return Math.max(1, Math.round(row.size_curve_value * row.category_factor * growthMult * maturity));
   }
 
   function el(tag, attrs) {
@@ -133,7 +133,7 @@
           'M of TVL that records no token. The early radar adds ' + DATA.early_size +
           ' more pre-token protocols the rule keeps, above and below that floor. ',
           el('b', { text: 'Implied value is a model, not a price' }),
-          ' — it is what a token would be worth if the protocol launched one at the multiple its own category already earns.'
+          ' — it is what a token would be worth if the protocol launched one at the value the market already gives protocols of its size, adjusted for its own category\u2019s record.'
         )
       ),
       el('div', { class: 'facts' },
@@ -288,15 +288,20 @@
 
   function modelPanel() {
     var m = DATA.model;
+    var c = DATA.size_curve;
+    var b = DATA.backtest;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'Every row is scored by one function of the snapshot figures. No protocol name is special-cased, and no row is hand-picked.' }),
       el('div', { class: 'formula' },
-        'implied = round( tvl_usd x category_multiple x growth_mult x maturity_mult )\n' +
-        'category_multiple = median market-cap / TVL of the live protocols in the same category (at least ' + m.multiple_min_live + ' of them, else the snapshot median ' + DATA.global_multiple + '), clamped to [' + m.multiple_floor + ', ' + m.multiple_cap + ']\n' +
+        'implied = round( size_curve_value x category_factor x growth_mult x maturity_mult )\n' +
+        'size_curve_value = exp(' + c.intercept + ' + ' + c.slope + ' x ln(tvl_usd))   — the market\u2019s own size curve, fitted by least squares on the ' + c.n + ' live-token protocols in this snapshot (R\u00b2 ' + c.r_squared + ')\n' +
+        'category_factor = exp(shrunk median residual of the live protocols in the same category), shrunk by n / (n + ' + m.category_shrink_k + '), clamped to [' + m.category_factor_floor + ', ' + m.category_factor_cap + ']; 1.00 when fewer than ' + m.category_min_live + ' live peers carry the category\n' +
         'growth_mult = 1 + clamp(change_7d, ' + m.growth_floor + ', ' + m.growth_cap + ') / 100 x ' + m.growth_weight_up + ' when growing, x ' + m.growth_weight_down + ' when falling\n' +
         'maturity_mult = ' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + '   (age unknown: the ranked set\u2019s median age, ' + DATA.unknown_age_days + ' days)'
       ),
+      el('h3', { text: 'Checked against the market, not just stated' }),
+      el('p', { class: 'sub', text: 'Leave one out, refit the curve and the factor without it, predict its market cap: over the ' + b.n + ' live-token protocols this snapshot already prices, the model\u2019s median log error is ' + b.median_abs_log_error + ' and ' + Math.round(b.within_2x * 100) + '% land within 2x of the market cap they actually carry (rank correlation ' + b.spearman + ', bias ' + (b.bias >= 0 ? '+' : '') + b.bias + '). The naive TVL x snapshot-median multiple manages a median log error of ' + b.baseline_median_abs_log_error + ', ' + Math.round(b.baseline_within_2x * 100) + '% within 2x, rank correlation ' + b.baseline_spearman + '. The curve is fitted, not asserted — and its R\u00b2 of ' + c.r_squared + ' says plainly how much of a market cap size alone explains.' }),
       el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token. Wrapped, staked and bridged products, versioned pools, exchanges and CEX protocols are set aside, not ranked as launches: they are products of tokens that already trade, by the same rule the watchlist uses. A protocol is said to record no token, never to have none.' })
     );
   }
@@ -324,7 +329,8 @@
       el('h3', { text: 'Implied value' }),
       el('div', { class: 'equation' },
         el('div', null, el('span', { text: 'TVL' }), el('b', { class: 'num', text: fmtUsd(row.tvl_usd) })),
-        el('div', null, el('span', { text: 'Category multiple (' + (row.category || 'Other') + ')' }), el('b', { class: 'num', text: 'x ' + row.category_multiple.toFixed(4) + (row.category_live_n >= DATA.model.multiple_min_live ? ' · ' + row.category_live_n + ' live peers' : ' · snapshot median') })),
+        el('div', null, el('span', { text: 'Size-curve value' }), el('b', { class: 'num', text: fmtUsd(row.size_curve_value) + ' · x ' + row.size_curve_multiple.toFixed(4) + ' on TVL' })),
+        el('div', null, el('span', { text: 'Category factor (' + (row.category || 'Other') + ')' }), el('b', { class: 'num', text: 'x ' + row.category_factor.toFixed(4) + (row.category_live_n >= DATA.model.category_min_live ? ' · ' + row.category_live_n + ' live peers' : ' · too few live peers to adjust') })),
         el('div', null, el('span', { text: 'Seven-day growth' }), el('b', { class: 'num', text: fmtPct(row.change_7d) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: 'x ' + row.growth_multiplier })),
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),

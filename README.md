@@ -16,23 +16,32 @@ Run it locally:
 mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../kit/input/snapshot.json
 ```
 
-## The model (radar-2)
+## The model (radar-3)
 
 Implied value follows only from the snapshot's own figures:
 
 ```
-implied = round( tvl_usd x category_multiple x growth_mult x maturity_mult )
+implied = round( size_curve_value x category_factor x growth_mult x maturity_mult )
 ```
 
-- **category_multiple** — the median market-cap / TVL of the live-token protocols in
-  the same category (at least 3 of them, else the snapshot's median, 0.2227),
-  clamped to [0.08, 0.65]. It is computed from the snapshot at run time: a category
-  whose tokens the market already values richly against TVL earns a richer implied
-  value for its pre-token peers.
+- **size_curve_value** — the market's own size curve, fitted at run time by least
+  squares on the snapshot's live-token protocols: `ln(mcap / (growth x maturity)) =
+  a + b x ln(TVL)`. On this snapshot `a = 7.27`, `b = 0.53`, R² 0.19 over 128 live
+  protocols. A slope below 1 is the point: a bigger protocol earns a lower multiple
+  on its TVL, so the giants no longer top the board on size alone.
+- **category_factor** — the category's own record against that curve: the median
+  residual of the live protocols in the same category, shrunk by `n / (n + 5)` and
+  clamped to [0.67, 1.50], applied only when at least 3 live peers carry the category,
+  else 1.00 — no adjustment from too few peers.
 - **growth_mult** — `1 + clamp(change_7d, -80, 200) / 100 x 0.6` when growing,
   `x 0.9` when falling: a falling TVL hurts more than a rising one helps.
 - **maturity_mult** — `0.5 + min(age_days, 1460) / 1460 x 0.5`; an unreported age
   uses the ranked set's own median age (418 days).
+
+The model checks itself at run time: leave-one-out against the 128 live-token
+protocols the snapshot already prices — median log error 1.29, 34% within 2x, rank
+correlation 0.40 — against 1.63 / 28% / 0.42 for the naive TVL x snapshot-median
+multiple. The dashboard shows both sets of numbers beside the fit, R² included.
 
 No protocol name is special-cased. The dashboard recomputes every row from the
 same figures and checks the number `board.json` carries.
@@ -57,8 +66,9 @@ it costs and how long it takes.
 
 A static page with no network and no framework: a sortable, filterable board
 (search, category, chain, minimum TVL, watchlist-only, growing-only), a top-5
-spotlight, a live-token view, and a detail drawer per protocol with the full model
-breakdown and its farm plan.
+spotlight, a live-token view, a detail drawer per protocol with the full model
+breakdown and its farm plan, and a model panel that shows the fitted size curve
+and the leave-one-out backtest against the naive multiple.
 
 ## License
 

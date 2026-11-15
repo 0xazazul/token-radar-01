@@ -1,4 +1,4 @@
-// The token radar's model (radar-2): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-3): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board ranks every protocol that records no token and is not a wrapped, staked or bridged
 // product of a token that already trades, a versioned pool, an exchange, or a CEX: the watchlist's
@@ -10,20 +10,34 @@
 //
 // Implied value follows only from the snapshot's own figures, in three parts:
 //
-//   multiple   = the category's live-token multiple: the median market-cap / TVL of the live
-//                protocols in the same category (at least 3 of them, else the whole snapshot's
-//                median), clamped to [0.08, 0.65]. It is computed from the snapshot at run time,
-//                never written in by hand: a category whose tokens the market already values
-//                richly against TVL earns a richer implied value for its pre-token peers.
+//   size curve = the market's own size curve, fitted at run time by least squares on the
+//                snapshot's live-token protocols: ln(mcap / (growth x maturity)) = a + b x ln(TVL).
+//                A slope below 1 says what the market already shows: a bigger protocol earns a
+//                lower multiple on its TVL. On this snapshot the fit is a = 7.27, b = 0.53,
+//                R-squared 0.19 over 128 live protocols: a weak fit, honestly a weak one, and
+//                the dashboard says so beside the backtest below. The curve's dollar value at a
+//                protocol's TVL is the base of its implied value.
+//   category   = the category's own record against that curve: the median residual of the live
+//                protocols in the same category, shrunk by n / (n + 5) and clamped to [0.67, 1.50],
+//                applied only when at least 3 live peers carry the category, else 1. A category
+//                whose tokens the market already values above the curve earns a richer implied
+//                value for its pre-token peers; a category with too few live peers earns no
+//                adjustment at all, rather than a guess from one peer.
 //   growth     = clamp(change_7d, -80, 200) per cent
 //   growthMult = 1 + (growth / 100) x 0.6 when growth is up, x 0.9 when it is down:
 //                a falling TVL hurts more than a rising one helps.
 //   maturity   = 0.5 + min(age_days, 1460) / 1460 x 0.5   (age_days unknown: the median age of
 //                the pre-token set itself, 418 days on this snapshot)
-//   implied    = max(1, round(tvl_usd x multiple x growthMult x maturity))
+//   implied    = max(1, round(size_curve_value x category_factor x growthMult x maturity))
 //
-// No protocol name is ever special-cased: the same function scores every row, and the page
-// recomputes each row from the same figures, so the screenshots and the code agree.
+// The model is checked, not just stated: at run time it replays itself against the 128 live-token
+// protocols the snapshot already prices (leave one out, refit, predict, compare with the market
+// cap it actually carries) and reports the median log error, the share within 2x and the rank
+// correlation, beside the same numbers for the naive TVL x snapshot-median multiple. On this
+// snapshot the curve's median log error is 1.29 against the naive 1.63, and 34% of live market
+// caps land within 2x against 28%. No protocol name is ever special-cased: the same function
+// scores every row, and the page recomputes each row from the same figures, so the screenshots
+// and the code agree.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -57,9 +71,10 @@ export interface ModelConstants {
   maturity_floor: number;
   maturity_range: number;
   maturity_days: number;
-  multiple_floor: number;
-  multiple_cap: number;
-  multiple_min_live: number;
+  category_min_live: number;
+  category_shrink_k: number;
+  category_factor_floor: number;
+  category_factor_cap: number;
 }
 
 export const MODEL: ModelConstants = {
@@ -70,13 +85,14 @@ export const MODEL: ModelConstants = {
   maturity_floor: 0.5,
   maturity_range: 0.5,
   maturity_days: 1460,
-  multiple_floor: 0.08,
-  multiple_cap: 0.65,
-  multiple_min_live: 3,
+  category_min_live: 3,
+  category_shrink_k: 5,
+  category_factor_floor: 0.67,
+  category_factor_cap: 1.5,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -106,9 +122,10 @@ export interface BoardRow {
   age_days: number | null;
   implied_value_usd: number;
   model: {
-    category_multiple: number;
+    size_curve_value: number;
+    size_curve_multiple: number;
+    category_factor: number;
     category_live_n: number;
-    category_live_median: number | null;
     growth_pct: number;
     growth_multiplier: number;
     maturity_multiplier: number;
@@ -130,7 +147,9 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
-  category_multiple: number;
+  size_curve_value: number;
+  size_curve_multiple: number;
+  category_factor: number;
   category_live_n: number;
   growth_multiplier: number;
   maturity_multiplier: number;
@@ -149,6 +168,20 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/** How the model checks itself against the live-token protocols the snapshot already prices:
+    leave one out, refit, predict, compare with the market cap it actually carries — beside the
+    same numbers for the naive TVL x snapshot-median multiple, so the check has a baseline. */
+export interface BacktestStats {
+  n: number;
+  spearman: number;
+  median_abs_log_error: number;
+  within_2x: number;
+  bias: number;
+  baseline_spearman: number;
+  baseline_median_abs_log_error: number;
+  baseline_within_2x: number;
+}
+
 /** Everything the dashboard needs: the board, the live set, and the model it runs. */
 export interface RadarData {
   as_of: string;
@@ -161,7 +194,8 @@ export interface RadarData {
   early_size: number;
   live_size: number;
   unknown_age_days: number;
-  global_multiple: number;
+  size_curve: { intercept: number; slope: number; r_squared: number; n: number };
+  backtest: BacktestStats;
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -197,44 +231,108 @@ function median(values: number[]): number | null {
   return sorted[Math.floor(sorted.length / 2)]!;
 }
 
-/** The market-cap / TVL ratio of every live protocol, grouped by category. */
-export function liveMultiples(snapshot: Snapshot): Map<string, { n: number; median: number }> {
-  const byCategory = new Map<string, number[]>();
-  for (const p of snapshot.protocols) {
-    if (p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
-    const key = p.category ?? 'Other';
-    const list = byCategory.get(key) ?? [];
-    list.push(p.mcap_usd / p.tvl_usd);
-    byCategory.set(key, list);
-  }
-  const out = new Map<string, { n: number; median: number }>();
-  for (const [key, list] of byCategory) {
-    const m = median(list);
-    if (m !== null) out.set(key, { n: list.length, median: m });
-  }
-  return out;
+/** A live protocol's growth multiplier, from the snapshot's own seven-day change. */
+function growthMultiplier(change_7d: number | null, model: ModelConstants): { pct: number; mult: number } {
+  const rawGrowth = finite(change_7d, 0);
+  const pct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
+  const weight = pct >= 0 ? model.growth_weight_up : model.growth_weight_down;
+  return { pct, mult: 1 + (pct / 100) * weight };
 }
 
-/** The multiple one category earns: its live median when enough live protocols carry it, else the global median. */
-export function categoryMultiple(
-  category: string | null,
-  multiples: Map<string, { n: number; median: number }>,
-  global: number,
+/** A protocol's maturity multiplier: how long it has run with no token. */
+function maturityMultiplier(age: number | null, unknownAgeDays: number, model: ModelConstants): number {
+  const ageForModel = age ?? unknownAgeDays;
+  return model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+}
+
+/** The growth x maturity adjustment one protocol's market cap is divided by before the size curve
+    is fitted: the curve is fitted on size alone, so the other two terms are taken out first. */
+function adjustment(p: SnapshotProtocol, asOf: string, unknownAgeDays: number, model: ModelConstants): number {
+  const age = ageDays(asOf, p.listed_at);
+  return growthMultiplier(p.change_7d, model).mult * maturityMultiplier(age, unknownAgeDays, model);
+}
+
+/** The market's own size curve: least squares on ln(mcap / adjustment) against ln(TVL) over the
+    snapshot's live-token protocols. Fitted at run time, never written in by hand. */
+export interface SizeCurve {
+  intercept: number;
+  slope: number;
+  rSquared: number;
+  n: number;
+}
+
+export function fitSizeCurve(
+  live: SnapshotProtocol[],
+  asOf: string,
+  unknownAgeDays: number,
   model: ModelConstants,
-): { multiple: number; liveN: number; liveMedian: number | null } {
-  const entry = multiples.get(category ?? 'Other');
-  if (entry !== undefined && entry.n >= model.multiple_min_live) {
-    return {
-      multiple: Math.min(model.multiple_cap, Math.max(model.multiple_floor, entry.median)),
-      liveN: entry.n,
-      liveMedian: Math.round(entry.median * 10000) / 10000,
-    };
+): SizeCurve {
+  const pts = live
+    .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
+    .map((p) => {
+      const adj = adjustment(p, asOf, unknownAgeDays, model);
+      return { x: Math.log(p.tvl_usd), y: Math.log(p.mcap_usd! / adj) };
+    });
+  const n = pts.length;
+  if (n < 10) return { intercept: Math.log(0.22), slope: 1, rSquared: 0, n };
+  let sx = 0;
+  let sy = 0;
+  for (const pt of pts) {
+    sx += pt.x;
+    sy += pt.y;
   }
-  return {
-    multiple: Math.min(model.multiple_cap, Math.max(model.multiple_floor, global)),
-    liveN: entry?.n ?? 0,
-    liveMedian: entry === undefined ? null : Math.round(entry.median * 10000) / 10000,
-  };
+  const mx = sx / n;
+  const my = sy / n;
+  let sxx = 0;
+  let sxy = 0;
+  let syy = 0;
+  for (const pt of pts) {
+    const dx = pt.x - mx;
+    const dy = pt.y - my;
+    sxx += dx * dx;
+    sxy += dx * dy;
+    syy += dy * dy;
+  }
+  const slope = sxx > 0 ? sxy / sxx : 1;
+  const intercept = my - slope * mx;
+  const rSquared = syy > 0 && sxx > 0 ? (sxy * sxy) / (sxx * syy) : 0;
+  return { intercept, slope, rSquared, n };
+}
+
+/** The dollar value the size curve gives a protocol at its TVL, and the multiple that implies. */
+function curveValue(tvl: number, curve: SizeCurve): { value: number; multiple: number } {
+  const value = Math.exp(curve.intercept + curve.slope * Math.log(Math.max(tvl, 1)));
+  return { value, multiple: value / Math.max(tvl, 1) };
+}
+
+/** The category's own record against the size curve: the median residual (log actual minus log
+    curve) of the live protocols in the same category, shrunk by n / (n + k) so a thin category
+    cannot swing a value on one peer's word, clamped to [floor, cap], and applied only when at
+    least `category_min_live` live peers carry the category, else 1: no adjustment at all. */
+export function categoryFactor(
+  category: string | null,
+  live: SnapshotProtocol[],
+  curve: SizeCurve,
+  asOf: string,
+  unknownAgeDays: number,
+  model: ModelConstants,
+): { factor: number; liveN: number } {
+  const residuals = live
+    .filter(
+      (p) => (p.category ?? 'Other') === (category ?? 'Other') && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0,
+    )
+    .map(
+      (p) =>
+        Math.log(p.mcap_usd! / adjustment(p, asOf, unknownAgeDays, model)) -
+        (curve.intercept + curve.slope * Math.log(p.tvl_usd)),
+    );
+  const n = residuals.length;
+  if (n < model.category_min_live) return { factor: 1, liveN: n };
+  const med = median(residuals);
+  if (med === null) return { factor: 1, liveN: n };
+  const shrunk = med * (n / (n + model.category_shrink_k));
+  const factor = Math.min(model.category_factor_cap, Math.max(model.category_factor_floor, Math.exp(shrunk)));
+  return { factor, liveN: n };
 }
 
 /** The three multipliers and the implied value one protocol gets under `model`. */
@@ -242,29 +340,128 @@ export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   model: ModelConstants,
-  multiples: Map<string, { n: number; median: number }>,
-  globalMultiple: number,
+  curve: SizeCurve,
+  factor: { factor: number; liveN: number },
   unknownAgeDays: number,
 ): {
   implied: number;
-  multiple: number;
+  curveValue: number;
+  curveMultiple: number;
+  categoryFactor: number;
   liveN: number;
-  liveMedian: number | null;
   growthPct: number;
   growthMult: number;
   maturityMult: number;
   age: number | null;
 } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, liveN, liveMedian } = categoryMultiple(protocol.category, multiples, globalMultiple, model);
-  const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const weight = growthPct >= 0 ? model.growth_weight_up : model.growth_weight_down;
-  const growthMult = 1 + (growthPct / 100) * weight;
-  const ageForModel = age ?? unknownAgeDays;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult));
-  return { implied, multiple, liveN, liveMedian, growthPct, growthMult, maturityMult, age };
+  const { value, multiple } = curveValue(protocol.tvl_usd, curve);
+  const growth = growthMultiplier(protocol.change_7d, model);
+  const maturityMult = maturityMultiplier(age, unknownAgeDays, model);
+  const implied = Math.max(1, Math.round(value * factor.factor * growth.mult * maturityMult));
+  return {
+    implied,
+    curveValue: value,
+    curveMultiple: multiple,
+    categoryFactor: factor.factor,
+    liveN: factor.liveN,
+    growthPct: growth.pct,
+    growthMult: growth.mult,
+    maturityMult,
+    age,
+  };
+}
+
+/** Rank correlation: Pearson on the ranks, ties averaged. */
+function spearman(actual: number[], predicted: number[]): number {
+  const n = actual.length;
+  if (n < 3) return 0;
+  const rankOf = (values: number[]): number[] => {
+    const order = values.map((v, i) => ({ v, i })).sort((a, b) => a.v - b.v);
+    const ranks = new Array<number>(n);
+    let i = 0;
+    while (i < n) {
+      let j = i;
+      while (j + 1 < n && order[j + 1]!.v === order[i]!.v) j++;
+      const avg = (i + j) / 2 + 1;
+      for (let k = i; k <= j; k++) ranks[order[k]!.i] = avg;
+      i = j + 1;
+    }
+    return ranks;
+  };
+  const ra = rankOf(actual);
+  const rp = rankOf(predicted);
+  const ma = ra.reduce((s, v) => s + v, 0) / n;
+  const mp = rp.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let da = 0;
+  let dp = 0;
+  for (let i = 0; i < n; i++) {
+    num += (ra[i]! - ma) * (rp[i]! - mp);
+    da += (ra[i]! - ma) ** 2;
+    dp += (rp[i]! - mp) ** 2;
+  }
+  return da > 0 && dp > 0 ? num / Math.sqrt(da * dp) : 0;
+}
+
+/** The model's own check: leave one live protocol out, refit the curve and the category factor
+    without it, predict its market cap, compare with the one it actually carries. The naive
+    baseline is TVL x the snapshot's median market-cap / TVL, itself leave-one-out, so the check
+    has something to beat. */
+export function backtest(
+  live: SnapshotProtocol[],
+  asOf: string,
+  unknownAgeDays: number,
+  model: ModelConstants,
+): BacktestStats {
+  const usable = live.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const n = usable.length;
+  if (n < 10) {
+    return {
+      n,
+      spearman: 0,
+      median_abs_log_error: 0,
+      within_2x: 0,
+      bias: 0,
+      baseline_spearman: 0,
+      baseline_median_abs_log_error: 0,
+      baseline_within_2x: 0,
+    };
+  }
+  const actual: number[] = [];
+  const predicted: number[] = [];
+  const basePredicted: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const held = usable[i]!;
+    const rest = usable.filter((_, j) => j !== i);
+    const curve = fitSizeCurve(rest, asOf, unknownAgeDays, model);
+    const factor = categoryFactor(held.category, rest, curve, asOf, unknownAgeDays, model);
+    const age = ageDays(asOf, held.listed_at);
+    const growth = growthMultiplier(held.change_7d, model);
+    const maturity = maturityMultiplier(age, unknownAgeDays, model);
+    const { value } = curveValue(held.tvl_usd, curve);
+    predicted.push(Math.max(1, value * factor.factor * growth.mult * maturity));
+    const ratios = rest.map((p) => p.mcap_usd! / p.tvl_usd);
+    const med = median(ratios) ?? 0.2;
+    basePredicted.push(held.tvl_usd * med);
+    actual.push(held.mcap_usd!);
+  }
+  const logErrors = predicted.map((p, i) => Math.log(p / actual[i]!));
+  const baseLogErrors = basePredicted.map((p, i) => Math.log(p / actual[i]!));
+  const absErrors = logErrors.map((e) => Math.abs(e)).sort((a, b) => a - b);
+  const baseAbsErrors = baseLogErrors.map((e) => Math.abs(e)).sort((a, b) => a - b);
+  const within = logErrors.filter((e) => Math.abs(e) <= Math.log(2)).length / n;
+  const baseWithin = baseLogErrors.filter((e) => Math.abs(e) <= Math.log(2)).length / n;
+  return {
+    n,
+    spearman: round4(spearman(actual, predicted)),
+    median_abs_log_error: round4(absErrors[Math.floor(n / 2)]!),
+    within_2x: round4(within),
+    bias: round4(logErrors.reduce((s, e) => s + e, 0) / n),
+    baseline_spearman: round4(spearman(actual, basePredicted)),
+    baseline_median_abs_log_error: round4(baseAbsErrors[Math.floor(n / 2)]!),
+    baseline_within_2x: round4(baseWithin),
+  };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -315,20 +512,20 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     if (!chosen.has(p.slug) && isRankable(p)) chosen.set(p.slug, p);
   }
 
-  const multiples = liveMultiples(snapshot);
-  const liveRatios = snapshot.protocols
-    .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
-    .map((p) => p.mcap_usd! / p.tvl_usd);
-  const globalMultiple = median(liveRatios) ?? 0.2;
+  // The live-token protocols calibrate the model: the size curve is fitted on them, and the
+  // category factors are their residuals against it.
+  const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
   // An age the snapshot never reports is filled with the median age of the ranked set itself.
   const knownAges = [...chosen.values()]
     .map((p) => ageDays(snapshot.as_of, p.listed_at))
     .filter((a): a is number => a !== null)
     .sort((a, b) => a - b);
   const unknownAgeDays = knownAges.length > 0 ? knownAges[Math.floor(knownAges.length / 2)]! : 365;
+  const curve = fitSizeCurve(live, snapshot.as_of, unknownAgeDays, model);
 
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, model, multiples, globalMultiple, unknownAgeDays);
+    const factor = categoryFactor(p.category, live, curve, snapshot.as_of, unknownAgeDays, model);
+    const v = impliedValue(p, snapshot.as_of, model, curve, factor, unknownAgeDays);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -349,11 +546,13 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     age_days: s.age,
     implied_value_usd: s.implied,
     model: {
-      // The multiple is kept at full precision: the page recomputes the row from it, and a
-      // rounded copy would make the recomputation differ by a few dollars from board.json.
-      category_multiple: s.multiple,
+      // The curve value and the category factor are kept at full precision: the page recomputes
+      // the row from them, and a rounded copy would make the recomputation differ by a few
+      // dollars from board.json. The other fields are display-only and may be rounded.
+      size_curve_value: s.curveValue,
+      size_curve_multiple: round4(s.curveMultiple),
+      category_factor: s.categoryFactor,
       category_live_n: s.liveN,
-      category_live_median: s.liveMedian,
       growth_pct: s.growthPct,
       growth_multiplier: round4(s.growthMult),
       maturity_multiplier: round4(s.maturityMult),
@@ -598,7 +797,9 @@ export function radarRow(row: BoardRow): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
-    category_multiple: row.model.category_multiple,
+    size_curve_value: row.model.size_curve_value,
+    size_curve_multiple: row.model.size_curve_multiple,
+    category_factor: row.model.category_factor,
     category_live_n: row.model.category_live_n,
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
@@ -608,21 +809,17 @@ export function radarRow(row: BoardRow): RadarRow {
 }
 
 /** Everything the dashboard renders, from the snapshot. */
-export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData; unknownAgeDays: number; globalMultiple: number } {
+export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData; unknownAgeDays: number } {
   const board = buildBoard(snapshot, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !r.watchlist).length;
-  const multiples = liveMultiples(snapshot);
-  const liveRatios = snapshot.protocols
-    .filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
-    .map((p) => p.mcap_usd! / p.tvl_usd);
-  const globalMultiple = median(liveRatios) ?? 0.2;
-  void multiples;
   const knownAges = board
     .map((r) => r.age_days)
     .filter((a): a is number => a !== null)
     .sort((a, b) => a - b);
   const unknownAgeDays = knownAges.length > 0 ? knownAges[Math.floor(knownAges.length / 2)]! : 365;
+  const liveProtocols = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const curve = fitSizeCurve(liveProtocols, snapshot.as_of, unknownAgeDays, model);
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
@@ -634,11 +831,17 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     early_size: early,
     live_size: live.length,
     unknown_age_days: unknownAgeDays,
-    global_multiple: Math.round(globalMultiple * 10000) / 10000,
+    size_curve: {
+      intercept: round4(curve.intercept),
+      slope: round4(curve.slope),
+      r_squared: round4(curve.rSquared),
+      n: curve.n,
+    },
+    backtest: backtest(liveProtocols, snapshot.as_of, unknownAgeDays, model),
     rows: board.map(radarRow),
     live,
   };
-  return { board, radar, unknownAgeDays, globalMultiple };
+  return { board, radar, unknownAgeDays };
 }
 
 /** The snapshot out of a file's text, refused unless it is the shape the model scores. */
