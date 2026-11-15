@@ -1,18 +1,15 @@
-// Token Radar's dashboard (radar-3.1). It reads window.RADAR (written beside dashboard/ by main.ts
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts
 // from the same board board.json carries) and renders the ranked board, a filterable table, a
 // per-protocol detail drawer with the model's own inputs and the protocol's farm plan, and the
-// live-token protocols set aside with their market caps. Every row also carries a netted
-// farm-plan verdict — farm, thin or skip — from the model's own numbers: the implied value
-// minus what the farm plan spends, tiered on the net left per dollar locked. No network: every
-// byte it shows is in data.js, and the farm plan it shows is the one board.json carries,
-// word for word.
+// live-token protocols set aside with their market caps. No network: every byte it shows is in
+// data.js, and the farm plan it shows is the one board.json carries, word for word.
 (function () {
   'use strict';
 
   var DATA = window.RADAR;
   if (!DATA) return;
   var app = document.getElementById('board');
-  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, watchlistOnly: false, growingOnly: false, verdict: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
+  var state = { q: '', category: 'all', chain: 'all', minTvl: 0, watchlistOnly: false, growingOnly: false, tab: 'pre-token', sort: 'implied', dir: -1, selected: null };
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -41,17 +38,6 @@
     var maturity = model.maturity_floor + (Math.min(Math.max(age, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
     return Math.max(1, Math.round(row.size_curve_value * row.category_factor * growthMult * maturity));
   }
-
-  // The netted multiple, recomputed from the row's own figures: (implied value minus what the
-  // farm plan spends) divided by TVL, rounded to four decimals like board.json carries it.
-  function netMultipleOf(row) {
-    var f = row.farm || {};
-    var e = f.economics || {};
-    var cost = (e.total_cost_usd === null || e.total_cost_usd === undefined) ? 0 : e.total_cost_usd;
-    if (!row.tvl_usd) return 0;
-    return Math.round(((row.implied_value_usd - cost) / row.tvl_usd) * 1e4) / 1e4;
-  }
-  function verdictRank(v) { return v === 'farm' ? 3 : v === 'thin' ? 2 : 1; }
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -84,7 +70,6 @@
     if (params.get('minTvl')) state.minTvl = Number(params.get('minTvl')) || 0;
     if (params.get('watchlist') === '1') state.watchlistOnly = true;
     if (params.get('growing') === '1') state.growingOnly = true;
-    if (params.get('verdict')) state.verdict = params.get('verdict');
   }
   function writeHash() {
     var params = new URLSearchParams();
@@ -94,7 +79,6 @@
     if (state.minTvl) params.set('minTvl', String(state.minTvl));
     if (state.watchlistOnly) params.set('watchlist', '1');
     if (state.growingOnly) params.set('growing', '1');
-    if (state.verdict !== 'all') params.set('verdict', state.verdict);
     if (state.selected) params.set('p', state.selected);
     var next = params.toString();
     if (next) window.history.replaceState(null, '', '#' + next);
@@ -109,7 +93,6 @@
       if (state.minTvl && r.tvl_usd < state.minTvl) return false;
       if (state.watchlistOnly && !r.watchlist) return false;
       if (state.growingOnly && !(r.change_7d !== null && r.change_7d > 0)) return false;
-      if (state.verdict !== 'all' && (!r.farm || r.farm.verdict !== state.verdict)) return false;
       if (!q) return true;
       var hay = [r.name, r.slug, r.category, (r.chains || []).join(' ')].join(' ').toLowerCase();
       return hay.indexOf(q) >= 0;
@@ -123,7 +106,6 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
-      else if (key === 'verdict') { av = verdictRank(a.farm ? a.farm.verdict : 'skip'); bv = verdictRank(b.farm ? b.farm.verdict : 'skip'); }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -159,8 +141,7 @@
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Early rows beyond the watchlist' }), el('b', { text: String(DATA.early_size) })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Top implied value' }), el('b', { text: fmtUsd(DATA.rows[0] ? DATA.rows[0].implied_value_usd : 0) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Farm verdicts' }), el('b', { text: (DATA.verdict_counts ? DATA.verdict_counts.farm + ' farm · ' + DATA.verdict_counts.thin + ' thin · ' + DATA.verdict_counts.skip + ' skip' : 'n/a') }))
+        el('div', { class: 'fact' }, el('span', { text: 'Top implied value' }), el('b', { text: fmtUsd(DATA.rows[0] ? DATA.rows[0].implied_value_usd : 0) }))
       )
     );
   }
@@ -173,8 +154,7 @@
           el('span', { class: 'rank', text: 'RANK ' + r.rank }),
           el('b', { text: r.name }),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) + ' implied' }),
-          el('span', { class: 'sub', text: fmtUsd(r.tvl_usd) + ' TVL · ' + fmtPct(r.change_7d) + ' in 7d' }),
-          el('span', { class: 'sub', text: 'Farm verdict: ' + (r.farm ? r.farm.verdict : 'n/a') + ' (net ' + (r.farm ? r.farm.net_multiple.toFixed(2) : 'n/a') + 'x on TVL)' })
+          el('span', { class: 'sub', text: fmtUsd(r.tvl_usd) + ' TVL · ' + fmtPct(r.change_7d) + ' in 7d' })
         );
       })
     );
@@ -205,12 +185,6 @@
     watchBox.addEventListener('change', function () { state.watchlistOnly = watchBox.checked; writeHash(); render(); });
     var growBox = el('input', { type: 'checkbox', id: 'growing', checked: state.growingOnly ? 'checked' : null, 'aria-label': 'Growing only' });
     growBox.addEventListener('change', function () { state.growingOnly = growBox.checked; writeHash(); render(); });
-    var verdictSelect = el('select', { id: 'verdict', 'aria-label': 'Filter by farm verdict' },
-      [['all', 'Any verdict'], ['farm', 'Farm'], ['thin', 'Thin'], ['skip', 'Skip']].map(function (o) {
-        return el('option', { value: o[0], text: o[1], selected: state.verdict === o[0] ? 'selected' : null });
-      })
-    );
-    verdictSelect.addEventListener('change', function () { state.verdict = verdictSelect.value; writeHash(); render(); });
     var pre = el('button', { type: 'button', 'aria-pressed': state.tab === 'pre-token' ? 'true' : 'false', text: 'Pre-token', onclick: function () { state.tab = 'pre-token'; render(); } });
     var live = el('button', { type: 'button', 'aria-pressed': state.tab === 'live' ? 'true' : 'false', text: 'Live token', onclick: function () { state.tab = 'live'; render(); } });
     return el('div', { class: 'controls' },
@@ -218,7 +192,6 @@
       el('div', { class: 'field' }, el('label', { for: 'category', text: 'Category' }), select),
       el('div', { class: 'field' }, el('label', { for: 'chain', text: 'Chain' }), chainSelect),
       el('div', { class: 'field' }, el('label', { for: 'minTvl', text: 'Minimum TVL' }), tvlSelect),
-      el('div', { class: 'field' }, el('label', { for: 'verdict', text: 'Farm verdict' }), verdictSelect),
       el('label', { class: 'check', for: 'watchlist' }, watchBox, 'Watchlist only'),
       el('label', { class: 'check', for: 'growing' }, growBox, 'Growing only'),
       el('div', { class: 'field' }, el('span', { class: 'sub', text: 'Token status' }), el('div', { class: 'tabs' }, pre, live)),
@@ -241,7 +214,7 @@
       return el('div', { class: 'panel' }, el('div', { class: 'empty' },
         el('h2', { text: 'No protocol matches that filter' }),
         el('p', { text: 'Clear the search or pick another category to see the board again.' }),
-        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.minTvl = 0; state.watchlistOnly = false; state.growingOnly = false; state.verdict = 'all'; writeHash(); render(); } })
+        el('button', { class: 'button primary', type: 'button', text: 'Clear filters', onclick: function () { state.q = ''; state.category = 'all'; state.chain = 'all'; state.minTvl = 0; state.watchlistOnly = false; state.growingOnly = false; writeHash(); render(); } })
       ));
     }
     var max = list[0].implied_value_usd || 1;
@@ -267,7 +240,6 @@
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / max) * 100)) + '%' })),
           el('span', { class: 'num', text: fmtUsd(r.implied_value_usd) })
         )),
-        el('td', null, el('span', { class: 'verdict verdict-' + (r.farm ? r.farm.verdict : 'skip'), text: r.farm ? r.farm.verdict : 'n/a' })),
         el('td', null, el('span', { class: 'status', text: 'records no token' }))
       );
       tbody.appendChild(tr);
@@ -275,7 +247,7 @@
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Rank is the size of the prize in dollars; the farm verdict is the value per dollar locked, net of the farm plan\u2019s costs — farm at a net multiple of 0.40 or above, thin at 0.20 or above, skip below. Select a row for its model and farm plan.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
@@ -283,7 +255,6 @@
             sortHeader('growth', '7d'),
             sortHeader('age', 'Age'),
             sortHeader('implied', 'Implied value'),
-            sortHeader('verdict', 'Farm verdict'),
             el('th', { scope: 'col', text: 'Token' })
           )),
           tbody
@@ -330,10 +301,7 @@
         'maturity_mult = ' + m.maturity_floor + ' + min(age_days, ' + m.maturity_days + ') / ' + m.maturity_days + ' x ' + m.maturity_range + '   (age unknown: the ranked set\u2019s median age, ' + DATA.unknown_age_days + ' days)'
       ),
       el('h3', { text: 'Checked against the market, not just stated' }),
-      el('p', { class: 'sub', text: 'Leave one out, refit the curve and the factor without it, predict its market cap: every prediction in this check is out of sample — the protocol being predicted never enters its own fit. Over the ' + b.n + ' live-token protocols this snapshot already prices, the model\u2019s median log error is ' + b.median_abs_log_error + ' and ' + Math.round(b.within_2x * 100) + '% land within 2x of the market cap they actually carry (rank correlation ' + b.spearman + ', bias ' + (b.bias >= 0 ? '+' : '') + b.bias + '). The naive TVL x snapshot-median multiple manages a median log error of ' + b.baseline_median_abs_log_error + ', ' + Math.round(b.baseline_within_2x * 100) + '% within 2x, rank correlation ' + b.baseline_spearman + '. The curve is fitted, not asserted — and its R\u00b2 of ' + c.r_squared + ' says plainly how much of a market cap size alone explains.' }),
-      el('h3', { text: 'Farm verdicts: farm, thin or skip' }),
-      el('p', { class: 'sub', text: 'Rank is the size of the prize in dollars; the verdict is the value per dollar locked, net of what the farm plan spends — so the two can disagree, and they do: the giants top the board on absolute value and score skip on value per dollar, because the size curve gives them the lowest multiples. For each row, net = implied value minus the farm plan\u2019s costs (gas plus the farmer\u2019s time at $25 an hour; the deployed capital stays in the position and is not a cost), and the verdict tiers on net / TVL: farm at 0.40 or above, thin at 0.20 or above, skip below. On this snapshot that is ' + (DATA.verdict_counts ? DATA.verdict_counts.farm + ' farm, ' + DATA.verdict_counts.thin + ' thin and ' + DATA.verdict_counts.skip + ' skip' : 'n/a') + '. The same thresholds score every row; no protocol name is special-cased.' }),
-      el('p', { class: 'sub', text: 'The verdict is a screen, not a payout promise: it compares the protocol\u2019s implied value, net of the farm\u2019s costs, against its TVL. It does not promise the farmer a share of the implied value — an airdrop\u2019s per-wallet payout depends on the program\u2019s own rules, which the snapshot does not carry.' }),
+      el('p', { class: 'sub', text: 'Leave one out, refit the curve and the factor without it, predict its market cap: over the ' + b.n + ' live-token protocols this snapshot already prices, the model\u2019s median log error is ' + b.median_abs_log_error + ' and ' + Math.round(b.within_2x * 100) + '% land within 2x of the market cap they actually carry (rank correlation ' + b.spearman + ', bias ' + (b.bias >= 0 ? '+' : '') + b.bias + '). The naive TVL x snapshot-median multiple manages a median log error of ' + b.baseline_median_abs_log_error + ', ' + Math.round(b.baseline_within_2x * 100) + '% within 2x, rank correlation ' + b.baseline_spearman + '. The curve is fitted, not asserted — and its R\u00b2 of ' + c.r_squared + ' says plainly how much of a market cap size alone explains.' }),
       el('p', { class: 'sub', text: 'TVL and seven-day growth come from the snapshot. Age is the time since the protocol was first listed, the best record of how long it has run with no token. Wrapped, staked and bridged products, versioned pools, exchanges and CEX protocols are set aside, not ranked as launches: they are products of tokens that already trade, by the same rule the watchlist uses. A protocol is said to record no token, never to have none.' })
     );
   }
@@ -349,9 +317,6 @@
     dialog.textContent = '';
     var steps = row.farm_steps || [];
     var recomputed = impliedOf(row, DATA.model);
-    var farm = row.farm || {};
-    var econ = farm.economics || {};
-    var recomputedNet = netMultipleOf(row);
     dialog.appendChild(el('div', { class: 'detail-head' },
       el('div', null,
         el('span', { class: 'brand-name', text: 'Rank ' + row.rank + ' of ' + DATA.board_size + (row.watchlist ? ' · Watchlist' : '') }),
@@ -373,18 +338,6 @@
         el('div', { class: 'total' }, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the same function scores every protocol. The page recomputes this row as ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' This is an estimate, not a price. The protocol records no token.' })
-    ));
-    dialog.appendChild(el('section', { class: 'detail-section' },
-      el('h3', { text: 'Farm verdict: ' + (farm.verdict || 'n/a') }),
-      el('div', { class: 'equation' },
-        el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
-        el('div', null, el('span', { text: 'Gas the plan spends' }), el('b', { class: 'num', text: '$' + (econ.gas_usd === undefined ? 'n/a' : econ.gas_usd.toFixed(2)) })),
-        el('div', null, el('span', { text: 'Farmer\u2019s time (' + (econ.active_minutes === undefined ? 'n/a' : econ.active_minutes) + ' min at $25/h)' }), el('b', { class: 'num', text: '$' + (econ.time_cost_usd === undefined ? 'n/a' : econ.time_cost_usd.toFixed(2)) })),
-        el('div', null, el('span', { text: 'Capital deployed (not a cost)' }), el('b', { class: 'num', text: '$' + (econ.capital_usd === undefined ? 'n/a' : econ.capital_usd) })),
-        el('div', { class: 'total' }, el('span', { text: 'Net (implied minus gas and time)' }), el('b', { class: 'num', text: fmtUsd(farm.net_usd) })),
-        el('div', null, el('span', { text: 'Net multiple (net / TVL)' }), el('b', { class: 'num', text: (farm.net_multiple === undefined ? 'n/a' : farm.net_multiple.toFixed(4)) + 'x' }))
-      ),
-      el('p', { class: 'sub', text: 'Farm at a net multiple of 0.40 or above, thin at 0.20 or above, skip below. The page recomputes this row\u2019s net multiple as ' + recomputedNet.toFixed(4) + 'x' + (farm.net_multiple !== undefined && recomputedNet === farm.net_multiple ? ', the same number board.json carries.' : ', which differs from the board: the data would be stale.') + ' Rank is the size of the prize; the verdict is the value per dollar locked — a screen, not a payout promise.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
