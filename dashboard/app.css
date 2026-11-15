@@ -125,6 +125,10 @@ tbody tr[data-selected="true"] { background: rgba(52, 211, 153, 0.10); }
 .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .status.live::before { background: var(--cyan); }
+.verdict { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-family: var(--font-num); font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+.verdict.verdict-farm { color: var(--accent); border-color: var(--accent-dim); background: rgba(52, 211, 153, 0.08); }
+.verdict.verdict-thin { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); background: rgba(251, 191, 36, 0.08); }
+.verdict.verdict-skip { color: var(--faint); }
 .watch { display: inline-block; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--accent-dim); border-radius: 999px; color: var(--accent); font-size: 10px; font-family: var(--font-num); letter-spacing: 0.06em; vertical-align: 1px; }
 
 .model { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-3); }

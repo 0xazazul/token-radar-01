@@ -38,6 +38,23 @@
 // caps land within 2x against 28%. No protocol name is ever special-cased: the same function
 // scores every row, and the page recomputes each row from the same figures, so the screenshots
 // and the code agree.
+//
+// Every row also carries a netted farm-plan verdict. The farm plan's own figures give it:
+// the gas its steps spend (two transactions at the chain's stated gas, plus about $2 a week of
+// weekly actions over the hold period) and the farmer's time (the plan's active minutes at
+// $25 an hour; the hold period is calendar time, not work, and is not costed as hours). The
+// deployed capital is not a cost: it stays in the position and comes back on withdrawal.
+//   net            = implied_value_usd - (gas_usd + time_cost_usd)
+//   net_multiple   = net / tvl_usd — the implied value left per dollar locked, after paying
+//                    the farm's costs. Rank is the size of the prize in dollars; the verdict
+//                    is the value per dollar locked, so the two can disagree: the giants top
+//                    the board on absolute value and score skip on value per dollar, because
+//                    the size curve gives them the lowest multiples.
+//   verdict        = 'farm' when net_multiple >= 0.40, 'thin' when >= 0.20, else 'skip'.
+// The verdict is a screen, not a payout promise: it compares the protocol's implied value,
+// net of the farm's costs, against its TVL. It does not promise the farmer a share of the
+// implied value — an airdrop's per-wallet payout depends on the program's own rules, which
+// the snapshot does not carry. The same thresholds score every row; no name is special-cased.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -92,7 +109,20 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-3.1';
+
+/** The farm plan's economics, as the dashboard states them: the gas its steps spend, the
+    farmer's time at a stated hourly rate, and the verdict thresholds on the netted multiple.
+    The deployed capital is not a cost — it stays in the position — so it is not in here. */
+export const FARM_ECONOMICS = {
+  hourly_usd: 25,
+  weekly_gas_usd: 2,
+  gas_ethereum_usd: 10,
+  gas_cheap_usd: 0.5,
+  gas_other_usd: 2,
+  verdict_farm_multiple: 0.4,
+  verdict_thin_multiple: 0.2,
+};
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -102,6 +132,25 @@ export interface FarmStep {
   text: string;
   cost: string;
   time: string;
+}
+
+/** What one farm plan spends, in numbers: the gas its steps spend, the farmer's active time,
+    and the time costed at the stated hourly rate. The deployed capital is shown beside it but
+    is not a cost: it stays in the position and comes back on withdrawal. */
+export interface FarmEconomics {
+  capital_usd: number;
+  gas_usd: number;
+  active_minutes: number;
+  time_cost_usd: number;
+  total_cost_usd: number;
+}
+
+/** A row's netted farm-plan verdict: the net, the netted multiple it is tiered on, and the tier. */
+export interface FarmVerdict {
+  economics: FarmEconomics;
+  net_usd: number;
+  net_multiple: number;
+  verdict: 'farm' | 'thin' | 'skip';
 }
 
 /** One row of board.json: the ranked board's row. */
@@ -132,6 +181,7 @@ export interface BoardRow {
     age_days: number | null;
   };
   farm_steps: string[];
+  farm: FarmVerdict;
 }
 
 /** The dashboard's compact view of one row, with the farm plan written in board.json. */
@@ -155,6 +205,7 @@ export interface RadarRow {
   maturity_multiplier: number;
   watchlist: boolean;
   farm_steps: string[];
+  farm: FarmVerdict;
 }
 
 /** A live-token protocol: it already trades, so the board shows the market's own value, not a model's. */
@@ -196,6 +247,7 @@ export interface RadarData {
   unknown_age_days: number;
   size_curve: { intercept: number; slope: number; r_squared: number; n: number };
   backtest: BacktestStats;
+  verdict_counts: { farm: number; thin: number; skip: number };
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -559,6 +611,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
       age_days: s.age,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
+    farm: farmVerdict(s.implied, s.p.tvl_usd, farmEconomics(s.p, s.age)),
   }));
 }
 
@@ -766,6 +819,55 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): FarmStep[] {
   ];
 }
 
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** What one transaction costs, in dollars, on the protocol's first chain: the midpoint of the
+    range the farm plan's own text states — about $5–15 on Ethereum, under $1 on a cheap chain,
+    about $1–3 elsewhere. The text and the number are the same figures. */
+export function gasPerTxUsd(p: SnapshotProtocol): number {
+  const chain = chainOf(p);
+  if (chain === 'Ethereum') return FARM_ECONOMICS.gas_ethereum_usd;
+  if (CHEAP_CHAINS.has(chain)) return FARM_ECONOMICS.gas_cheap_usd;
+  return FARM_ECONOMICS.gas_other_usd;
+}
+
+/** What one farm plan spends, in numbers, from the same figures its text states: two
+    transactions at the chain's gas, plus about $2 of gas a week over the hold period, and the
+    plan's active minutes at $25 an hour. The hold period is calendar time, not work, so it is
+    not costed as hours; the deployed capital stays in the position and is not a cost. */
+export function farmEconomics(p: SnapshotProtocol, age: number | null): FarmEconomics {
+  const capital = capitalFor(p);
+  const hold = holdDaysFor(age);
+  const weeks = hold / 7;
+  const gas = 2 * gasPerTxUsd(p) + FARM_ECONOMICS.weekly_gas_usd * weeks;
+  const activeMinutes = 45 + 10 * weeks;
+  const timeCost = (activeMinutes / 60) * FARM_ECONOMICS.hourly_usd;
+  return {
+    capital_usd: capital,
+    gas_usd: round2(gas),
+    active_minutes: round2(activeMinutes),
+    time_cost_usd: round2(timeCost),
+    total_cost_usd: round2(gas + timeCost),
+  };
+}
+
+/** A row's netted farm-plan verdict. Net is the implied value minus what the farm plan spends
+    (gas + time cost). The verdict tiers on the netted multiple — the net left per dollar locked —
+    because rank is the size of the prize in dollars while the verdict is the value per dollar
+    locked: farm at 0.40 or above, thin at 0.20 or above, skip below. The same thresholds score
+    every row; no protocol name is special-cased. */
+export function farmVerdict(impliedValueUsd: number, tvlUsd: number, economics: FarmEconomics): FarmVerdict {
+  const net = impliedValueUsd - economics.total_cost_usd;
+  const netMultiple = tvlUsd > 0 ? Math.round((net / tvlUsd) * 1e4) / 1e4 : 0;
+  const verdict =
+    netMultiple >= FARM_ECONOMICS.verdict_farm_multiple
+      ? 'farm'
+      : netMultiple >= FARM_ECONOMICS.verdict_thin_multiple
+        ? 'thin'
+        : 'skip';
+  return { economics, net_usd: round2(net), net_multiple: netMultiple, verdict };
+}
+
 /** The live-token protocols, by market cap, for the dashboard's Live token view. */
 export function liveRows(snapshot: Snapshot): LiveRow[] {
   return snapshot.protocols
@@ -805,6 +907,7 @@ export function radarRow(row: BoardRow): RadarRow {
     maturity_multiplier: row.model.maturity_multiplier,
     watchlist: row.watchlist,
     farm_steps: row.farm_steps,
+    farm: row.farm,
   };
 }
 
@@ -838,6 +941,11 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
       n: curve.n,
     },
     backtest: backtest(liveProtocols, snapshot.as_of, unknownAgeDays, model),
+    verdict_counts: {
+      farm: board.filter((r) => r.farm.verdict === 'farm').length,
+      thin: board.filter((r) => r.farm.verdict === 'thin').length,
+      skip: board.filter((r) => r.farm.verdict === 'skip').length,
+    },
     rows: board.map(radarRow),
     live,
   };
@@ -903,6 +1011,10 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     if (steps.length < 3 || steps.length > 12) return `${r.slug} has ${steps.length} farm steps`;
     for (const s of steps) if (s.trim().length < 20 || s.trim().length > 600) return `${r.slug} has a farm step of ${s.trim().length} characters`;
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0) return `${r.slug} has implied value ${r.implied_value_usd}`;
+    if (!['farm', 'thin', 'skip'].includes(r.farm.verdict)) return `${r.slug} has farm verdict ${r.farm.verdict}`;
+    if (!Number.isFinite(r.farm.net_usd) || r.farm.net_usd <= 0) return `${r.slug} has farm net ${r.farm.net_usd}`;
+    if (!Number.isFinite(r.farm.net_multiple) || r.farm.net_multiple < 0) return `${r.slug} has farm net multiple ${r.farm.net_multiple}`;
+    if (!Number.isFinite(r.farm.economics.total_cost_usd) || r.farm.economics.total_cost_usd < 0) return `${r.slug} has farm cost ${r.farm.economics.total_cost_usd}`;
   }
   return null;
 }
